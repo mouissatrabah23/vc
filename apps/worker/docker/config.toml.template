@@ -1,0 +1,71 @@
+# krillinai-cli configuration.
+#
+# GENERATED AT CONTAINER STARTUP — rendered by entrypoint.sh from
+# apps/worker/docker/config.toml.template. Edits made in the container are lost
+# on the next restart; change the template or the environment instead.
+#
+# The rendered copy CONTAINS PROVIDER API KEYS. It is written mode 0600, owned
+# by uid 10001, and must not be copied out of the container or committed.
+#
+# The schema mirrors config/config-example.toml at the pinned upstream commit.
+# When bumping KRILLINAI_REF, diff that file against this template.
+
+[app]
+    segment_duration = ${KRILLINAI_SEGMENT_DURATION}
+    transcribe_parallel_num = ${KRILLINAI_TRANSCRIBE_PARALLEL}
+    translate_parallel_num = ${KRILLINAI_TRANSLATE_PARALLEL}
+    transcribe_max_attempts = 3
+    translate_max_attempts = 5
+    max_sentence_length = 70
+    enable_block_vtt_batch = false
+    vtt_batch_size = 10
+    target_language_first = true
+    short_subtitle_max_chars = 20
+    # Outbound proxy, e.g. http://host.docker.internal:7890. Empty = direct.
+    proxy = "${KRILLINAI_PROXY}"
+
+[server]
+    # The worker drives the CLI as a child process; nothing binds a port. Kept
+    # on loopback so a future `cmd/server` run cannot be reached from outside.
+    host = "127.0.0.1"
+    port = 8888
+
+# -----------------------------------------------------------------------------
+# Providers — only the sections for the providers you select need real values.
+# -----------------------------------------------------------------------------
+
+[llm]
+    base_url = "${KRILLINAI_LLM_BASE_URL}"
+    api_key = "${KRILLINAI_LLM_API_KEY}"
+    model = "${KRILLINAI_LLM_MODEL}"
+    json = false
+
+[transcribe]
+    provider = "${KRILLINAI_TRANSCRIBE_PROVIDER}"
+    enable_gpu_acceleration = false
+    [transcribe.openai]
+        base_url = "${KRILLINAI_TRANSCRIBE_BASE_URL}"
+        api_key = "${KRILLINAI_TRANSCRIBE_API_KEY}"
+        model = "${KRILLINAI_TRANSCRIBE_MODEL}"
+    [transcribe.fasterwhisper]
+        # Downloaded into /app/models on first use — mount that volume or the
+        # model is refetched on every container start.
+        model = "medium"
+
+[tts]
+    provider = "${KRILLINAI_TTS_PROVIDER}"
+    [tts.openai]
+        base_url = "${KRILLINAI_TTS_BASE_URL}"
+        api_key = "${KRILLINAI_TTS_PROVIDER_KEY}"
+        model = "${KRILLINAI_TTS_MODEL}"
+
+[dubbing]
+    min_subtitle_duration = 2.5
+    max_chunk_size = 5
+    gap_tolerance = 1.5
+    speed_min = 0.95
+    speed_accept = 1.15
+    speed_max = 1.30
+    enable_text_rewrite = true
+    rewrite_max_attempts = 2
+    estimator = "statistical"

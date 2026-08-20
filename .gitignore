@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# caches
+.turbo/
+.eslintcache
+coverage/
+
+# env — the root .env is the single source of truth and must never be committed
+.env
+.env.*
+!.env.example
+
+# prisma
+packages/db/prisma/migrations/dev.db*
+
+# worker scratch space (transcodes, subtitle files, krillinai temp output)
+.workdir/
+tmp/
+
+# editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*

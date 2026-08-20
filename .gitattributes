@@ -1,0 +1,20 @@
+# Normalise to LF in the repository.
+* text=auto eol=lf
+
+# Files that MUST be LF regardless of platform: a CRLF shebang line makes the
+# kernel look for an interpreter named "/bin/sh\r", and the container fails to
+# start with a confusing "no such file or directory".
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+entrypoint.sh   text eol=lf
+
+# Binary assets — never touch these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff  binary
+*.woff2 binary
+
+# Generated: collapse in review diffs.
+pnpm-lock.yaml linguist-generated=true -diff

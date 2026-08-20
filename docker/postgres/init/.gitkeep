@@ -1,0 +1,3 @@
+# Drop .sql / .sh files here to seed the local Postgres cluster.
+# They run exactly once, when the `postgres-data` volume is first created.
+# Re-run them with: docker compose down -v && docker compose up -d

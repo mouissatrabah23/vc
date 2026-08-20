@@ -1,0 +1,102 @@
+# Local development infrastructure only: Postgres + Redis.
+#
+# The apps (web / api / worker) run on the host via `pnpm dev` so you keep fast
+# HMR and attachable debuggers. This file exists so you can develop against a
+# real Postgres and a real Redis before pointing DATABASE_URL at Supabase.
+#
+#   docker compose up -d          # start postgres + redis
+#   docker compose ps             # health status
+#   docker compose logs -f redis
+#   docker compose down           # stop, keep data
+#   docker compose down -v        # stop and DROP all data
+#
+# Optional admin UIs (Adminer for Postgres, Redis Insight) are behind a profile:
+#   docker compose --profile tools up -d
+
+name: saas-monorepo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: saas-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: saas_dev
+      # Deterministic collation so local sort order matches Supabase.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # host:container — matches DATABASE_URL in .env.example
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Any .sql / .sh dropped here runs once, on first cluster init only.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d saas_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: saas-redis
+    restart: unless-stopped
+    # BullMQ needs keyspace-notification events for delayed/stalled job handling,
+    # and `noeviction` so queue keys are never dropped under memory pressure.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+      - --notify-keyspace-events
+      - Ex
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Optional tooling — `docker compose --profile tools up -d`
+  # ---------------------------------------------------------------------------
+
+  adminer:
+    image: adminer:latest
+    container_name: saas-adminer
+    profiles: ["tools"]
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: dracula
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: saas-redis-insight
+    profiles: ["tools"]
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    volumes:
+      - redis-insight-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  redis-insight-data:

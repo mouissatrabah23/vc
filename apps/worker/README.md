@@ -1,0 +1,139 @@
+# @saas/worker
+
+BullMQ consumer. Pulls jobs off the `media` and `system` queues and drives
+`krillinai-cli` as a child process.
+
+## Local
+
+```bash
+pnpm --filter @saas/worker dev
+```
+
+Runs against the Redis from `docker compose up -d`. Outside the container there
+is no `krillinai-cli` binary and no rendered `config.toml`, so startup logs two
+warnings and media jobs fail fast — expected until you run the Docker image.
+
+## Docker
+
+The build context is the **repo root**:
+
+```bash
+docker build -f apps/worker/Dockerfile -t saas-worker:local .
+
+docker run --rm --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
+  -e DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/saas_dev \
+  -v saas-models:/app/models \
+  -v saas-bin:/app/bin \
+  saas-worker:local
+```
+
+`host.docker.internal` reaches the compose services running on your host. On
+Linux add `--add-host=host.docker.internal:host-gateway`.
+
+> **The build needs network access to github.com.** It clones
+> `krillinai/KrillinAI` and downloads a `yt-dlp` release asset. See the root
+> README for the air-gapped notes.
+
+### Build arguments
+
+| Arg                 | Default                                    | Purpose                                             |
+| ------------------- | ------------------------------------------ | --------------------------------------------------- |
+| `KRILLINAI_REF`     | `5090acc9c3df28439237ec93d0667f39ad896989` | Upstream commit to build (tag `v2.1.0`)             |
+| `KRILLINAI_CMD_PKG` | `./cmd/cli`                                | Go package built; repo also has `desktop`, `server` |
+| `KRILLINAI_REPO`    | upstream HTTPS URL                         | Point at a fork or an internal mirror               |
+| `YT_DLP_VERSION`    | `2026.08.19`                               | Pinned yt-dlp release                               |
+| `GO_VERSION`        | `1.22`                                     | Matches upstream `go.mod`                           |
+| `CGO_ENABLED`       | `0`                                        | Static binary; set `1` if a dep needs cgo           |
+
+`KRILLINAI_REF` is a full commit SHA on purpose. Tags can be force-moved and
+branches move constantly; only a SHA makes `docker build` reproducible. When
+bumping it, also diff upstream `config/config-example.toml` against
+`docker/config.toml.template`.
+
+## Image stages
+
+| Stage               | Base                    | Produces                                |
+| ------------------- | ----------------------- | --------------------------------------- |
+| `krillinai-builder` | `golang:1.22-bookworm`  | `/out/krillinai-cli` from pinned source |
+| `ytdlp`             | `debian:bookworm-slim`  | pinned `yt-dlp` binary (keeps curl out) |
+| `deps`              | `node:22-bookworm-slim` | pnpm install, worker subgraph only      |
+| `build`             | ← `deps`                | compiled TS + generated Prisma client   |
+| `runtime`           | `node:22-bookworm-slim` | final image, runs as uid 10001          |
+
+Runtime packages mirror upstream's `docker.md` / `Dockerfile`: `ffmpeg`,
+`yt-dlp`, CJK + Latin fonts (subtitle burn-in renders tofu boxes without them),
+`gettext-base` for `envsubst`, and `tini` as PID 1.
+
+## Configuration: rendered, never baked
+
+Secrets are **not** in the image. `docker/config.toml.template` is committed
+with `${VAR}` placeholders; `docker/entrypoint.sh` runs `envsubst` at container
+startup and writes `/app/config/config.toml` with `umask 077` + `chmod 600`,
+then `exec`s the CMD.
+
+Baking keys into a layer would expose them to anyone who can pull the image —
+`docker history` and a layer extract both reveal them, and the value survives
+in the registry even if a later layer deletes the file.
+
+| Variable                       | Lands in                                                  |
+| ------------------------------ | --------------------------------------------------------- |
+| `KRILLINAI_LLM_API_KEY`        | `[llm].api_key`                                           |
+| `KRILLINAI_TTS_PROVIDER_KEY`   | `[tts.openai].api_key`                                    |
+| `KRILLINAI_TRANSCRIBE_API_KEY` | `[transcribe.openai].api_key` (falls back to the LLM key) |
+
+Missing keys **warn** rather than abort: the worker must still boot and report
+health, so jobs fail individually with a clear cause instead of the container
+crash-looping.
+
+Inspect a render without starting the worker:
+
+```bash
+docker run --rm --env-file .env saas-worker:local sh -c 'cat $KRILLINAI_CONFIG_PATH'
+```
+
+## Sandboxing
+
+- Runs as `krillin` (uid/gid 10001), no login shell, never root.
+- Application code and `node_modules` are root-owned and read-only to that
+  user. A CLI compromise cannot modify the code that invokes it.
+- Writable paths are only `/app/config` (0700), `/app/work` (0700),
+  `/app/models` and `/app/bin`. Each job gets its own subdirectory under
+  `JOB_WORKDIR`, removed when it settles, and `workdir.ts` rejects any path
+  that escapes it.
+- `runKrillinai` spawns with `shell: false` — user-controlled filenames and
+  language codes cannot be injected — and passes an explicit environment
+  allow-list, so the CLI sees neither database nor R2 credentials. Provider
+  keys reach it only through the 0600 config file.
+- Every invocation is bounded by `KRILLINAI_TIMEOUT_MS` with `SIGKILL`, and
+  captured output is capped at 1 MB.
+
+Hardening worth adding at deploy time: `--read-only` with a tmpfs on
+`/app/work` and `/app/config`, `--cap-drop=ALL`,
+`--security-opt=no-new-privileges`, plus CPU and memory limits.
+
+## Layout
+
+| File                          | Role                                                    |
+| ----------------------------- | ------------------------------------------------------- |
+| `src/index.ts`                | Worker bootstrap, event wiring, graceful drain          |
+| `src/krillinai.ts`            | The single process boundary to the CLI, with guardrails |
+| `src/workdir.ts`              | Per-job scratch dirs and path-escape checks             |
+| `src/processors/*.ts`         | One dispatch table per queue                            |
+| `docker/config.toml.template` | Committed config with `${VAR}` placeholders             |
+| `docker/entrypoint.sh`        | Renders the config, then `exec`s the CMD                |
+
+## Known gap
+
+How the pinned CLI locates its config file is **unverified**. Upstream's image
+runs with `WORKDIR /app` and the file at `/app/config/config.toml`, implying
+CWD-relative discovery, while `runKrillinai` spawns with `cwd` set to the job
+directory. Before implementing processors, run:
+
+```bash
+docker run --rm --entrypoint krillinai-cli saas-worker:local --help
+```
+
+and either add the `--config` flag it documents, or spawn with `cwd: '/app'`
+and absolute media paths. The seam is marked with a comment in
+`src/krillinai.ts`.

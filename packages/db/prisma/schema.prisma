@@ -1,0 +1,179 @@
+// Placeholder schema — enough shape for `prisma generate` to produce a client
+// and for the apps to compile. Model the real domain in a later stage.
+//
+//   pnpm db:generate   regenerate the client after editing this file
+//   pnpm db:push       sync the local dev database without a migration
+//   pnpm db:migrate    create + apply a named migration
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Pooled connection used at runtime (PgBouncer on Supabase).
+  url       = env("DATABASE_URL")
+  // Direct session connection — Prisma Migrate cannot run DDL through a pooler.
+  directUrl = env("DIRECT_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Identity
+// -----------------------------------------------------------------------------
+
+/// Mirrors a Supabase `auth.users` row. `id` is the Supabase user id, so no
+/// mapping table is needed between the JWT `sub` claim and our tables.
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique
+  name      String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects      Project[]
+  jobs          Job[]
+  subscriptions Subscription[]
+
+  @@map("users")
+}
+
+// -----------------------------------------------------------------------------
+// Workspace
+// -----------------------------------------------------------------------------
+
+model Project {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @db.Uuid
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  jobs   Job[]
+  assets Asset[]
+
+  @@index([ownerId])
+  @@map("projects")
+}
+
+// -----------------------------------------------------------------------------
+// Processing
+// -----------------------------------------------------------------------------
+
+enum JobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+/// One krillinai-cli pipeline run. Mirrors the BullMQ job so status survives a
+/// Redis flush and stays queryable after the BullMQ record is evicted.
+model Job {
+  id     String    @id @default(uuid()) @db.Uuid
+  userId String    @db.Uuid
+  projectId String @db.Uuid
+
+  /// Matches @saas/types MEDIA_JOB_NAMES, e.g. `media.transcribe`.
+  type   String
+  status JobStatus @default(queued)
+
+  /// BullMQ job id, for cross-referencing queue state. Null until enqueued.
+  queueJobId String?
+
+  /// Frozen TranscodeOptions the job was submitted with.
+  input  Json
+  /// JobResult payload once the job settles.
+  output Json?
+  error  Json?
+
+  progress Int @default(0)
+
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assets  Asset[]
+
+  @@index([userId, status])
+  @@index([projectId, createdAt])
+  @@map("jobs")
+}
+
+/// An object stored in R2 — either a source upload or a job output artifact.
+model Asset {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @db.Uuid
+  jobId     String?  @db.Uuid
+
+  /// R2 object key. Unique so an upload is never registered twice.
+  storageKey  String  @unique
+  kind        String
+  format      String
+  sizeBytes   BigInt
+  language    String?
+  contentType String?
+
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  job     Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([jobId])
+  @@map("assets")
+}
+
+// -----------------------------------------------------------------------------
+// Billing (Chargily)
+// -----------------------------------------------------------------------------
+
+enum SubscriptionStatus {
+  active
+  past_due
+  cancelled
+  expired
+}
+
+model Subscription {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+
+  planId String
+  status SubscriptionStatus @default(active)
+
+  /// Chargily checkout id that opened this subscription period.
+  chargilyCheckoutId String? @unique
+
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("subscriptions")
+}
+
+/// Append-only log of Chargily webhooks. `eventId` is unique, which makes
+/// webhook handling idempotent when Chargily retries a delivery.
+model WebhookEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  provider    String    @default("chargily")
+  eventId     String
+  type        String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([provider, eventId])
+  @@map("webhook_events")
+}
