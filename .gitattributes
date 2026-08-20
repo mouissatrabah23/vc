@@ -17,4 +17,4 @@ entrypoint.sh   text eol=lf
 *.woff2 binary
 
 # Generated: collapse in review diffs.
-pnpm-lock.yaml linguist-generated=true -diff
+pnpm-lock.yaml linguist-generated=true
