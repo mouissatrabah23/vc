@@ -123,17 +123,61 @@ Hardening worth adding at deploy time: `--read-only` with a tmpfs on
 | `docker/config.toml.template` | Committed config with `${VAR}` placeholders             |
 | `docker/entrypoint.sh`        | Renders the config, then `exec`s the CMD                |
 
-## Known gap
+## How the CLI finds its config (verified)
 
-How the pinned CLI locates its config file is **unverified**. Upstream's image
-runs with `WORKDIR /app` and the file at `/app/config/config.toml`, implying
-CWD-relative discovery, while `runKrillinai` spawns with `cwd` set to the job
-directory. Before implementing processors, run:
+`krillinai-cli` resolves configuration from **`./config/config.toml`, relative
+to its working directory**. There is no `--config` flag and no config-path
+environment variable. Established by running the built image, not by assumption:
 
-```bash
-docker run --rm --entrypoint krillinai-cli saas-worker:local --help
+| Test | Setup                                             | CLI output                                                       |
+| ---- | ------------------------------------------------- | ---------------------------------------------------------------- |
+| 1    | job cwd, no `./config`                            | `未找到配置文件` (config file not found), `config/config.go:220` |
+| 2    | job cwd + `./config/config.toml`                  | `已找到配置文件` (config file found), `config/config.go:223`     |
+| 3    | job cwd + `./config` **symlink** to `/app/config` | found — symlink is honoured                                      |
+| 4    | job cwd + invalid TOML at that path               | found, then `加载配置文件失败` with a line-1 parse error         |
+
+Test 1 is the decisive one: `/app/config/config.toml` existed and `--workdir`
+pointed at the job directory, yet the CLI still reported "not found". So
+`--workdir` is task isolation only — it plays no part in config lookup.
+
+`runKrillinai` therefore symlinks `<job-dir>/config` to the directory holding
+the rendered config before spawning. A symlink rather than a copy, so live
+provider credentials are not duplicated into every scratch directory.
+
+### The working directory must be writable
+
+During logger init — before argv is parsed — the CLI opens `app.log` in its
+working directory. Run it anywhere read-only and it aborts immediately:
+
+```
+panic: 无法打开日志文件: open app.log: permission denied
+    krillin-ai/log.InitLogger()  log/zap.go:14
+    main.main()                  cmd/cli/main.go:17
 ```
 
-and either add the `--config` flag it documents, or spawn with `cwd: '/app'`
-and absolute media paths. The seam is marked with a comment in
-`src/krillinai.ts`.
+This is why the CLI is never run with `cwd=/app`, where the application code
+lives root-owned. Each job's scratch directory is writable by uid 10001.
+
+## Command surface (from the built binary)
+
+```
+krillinai-cli <command> [flags]
+
+  subtitle             Generate source, target, bilingual, and short vertical subtitles
+  tts                  Generate target-language dubbing from SRT subtitles
+  render-horizontal    Render landscape subtitle or dubbed videos
+  render-vertical      Render portrait subtitle or dubbed videos
+  pipeline             Plan or run multi-stage workflows when supported
+  cover                Generate a cover image from a prompt
+  update               Update krillinai-cli from GitHub releases
+  voices               List available TTS voice codes
+  status               Reserved status query surface
+```
+
+`subtitle` flags: `--origin-lang`, `--target-lang`, `--user-lang`, `--workdir`,
+`--task-id`, `--caption-source` (any|manual|auto|whisper), `--bilingual-top`,
+`--max-word-one-line`, `--subtitle-style-file`, `--dry-run`.
+
+`--dry-run` validates a command without external calls — useful in tests. Note
+it returns `{"ok":true,...}` _without_ loading config, so it cannot be used to
+verify configuration.

@@ -11,7 +11,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, constants } from 'node:fs/promises';
+import { access, constants, lstat, symlink } from 'node:fs/promises';
+import path from 'node:path';
 import { env } from './env.js';
 import { logger } from './logger.js';
 
@@ -72,25 +73,67 @@ export async function assertKrillinaiAvailable(): Promise<void> {
 }
 
 /**
+ * Points `<cwd>/config` at the directory holding the rendered config.toml.
+ *
+ * krillinai-cli resolves its configuration from `./config/config.toml`,
+ * RELATIVE TO THE PROCESS WORKING DIRECTORY. There is no `--config` flag, and
+ * no config path environment variable. Verified against the pinned build:
+ *
+ *   - `krillinai-cli --help` and `subtitle --help` list no config flag; the
+ *     only path-ish flag is `--workdir <dir>`, and it does not affect lookup.
+ *   - Run from a job dir with no `./config`, it logs `未找到配置文件`
+ *     ("config file not found") at config/config.go:220 — even though
+ *     /app/config/config.toml existed and --workdir pointed at the job dir.
+ *   - With `./config/config.toml` present it logs `已找到配置文件`
+ *     ("config file found") at config/config.go:223.
+ *   - Given deliberately invalid TOML at that path it reports a parse error
+ *     for line 1, proving it reads that exact file.
+ *   - The literal string `./config/config.toml` is compiled into the binary.
+ *
+ * A symlink satisfies the lookup (verified), so each job links to the single
+ * 0600 config the container entrypoint rendered. Copying it per job would
+ * duplicate live provider credentials into every scratch directory instead.
+ */
+async function linkConfigInto(cwd: string): Promise<void> {
+  const configDir = path.dirname(env.KRILLINAI_CONFIG_PATH);
+  const linkPath = path.join(cwd, 'config');
+
+  try {
+    await lstat(linkPath);
+    return; // already present — a previous run in this dir created it
+  } catch {
+    // not there yet, fall through and create it
+  }
+
+  try {
+    await symlink(configDir, linkPath, 'dir');
+  } catch (error) {
+    // EEXIST means a concurrent job won the race, which is fine.
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+}
+
+/**
  * Runs krillinai-cli with the given arguments.
  *
  * Deliberately uses `spawn` without a shell: arguments carry user-controlled
  * values (file names, language codes), and `shell: true` would make them
  * injectable.
  *
- * UNVERIFIED — confirm before implementing processors: how the pinned CLI
- * locates its config. Upstream's own image runs the binary with WORKDIR /app
- * and the file at /app/config/config.toml, i.e. discovery looks CWD-relative,
- * whereas we spawn with `cwd` set to the isolated job directory. Run
- * `docker run --rm --entrypoint krillinai-cli saas-worker:local --help`
- * against the built image and, if a `--config` flag exists, prepend it here;
- * otherwise pass `cwd: '/app'` and use absolute paths for the media arguments.
+ * `cwd` must be a per-job directory that the worker user can WRITE to: the CLI
+ * opens `app.log` in its working directory during logger init, before it parses
+ * argv. Running it anywhere read-only aborts the process outright with
+ * `panic: 无法打开日志文件 ... permission denied` — which is why this never
+ * runs with cwd=/app, where the application code lives root-owned.
  */
 export async function runKrillinai(
   args: string[],
   options: { cwd: string; signal?: AbortSignal } = { cwd: env.JOB_WORKDIR },
 ): Promise<RunResult> {
   const startedAt = Date.now();
+
+  // Must happen before spawn: the CLI resolves config at startup.
+  await linkConfigInto(options.cwd);
 
   return new Promise<RunResult>((resolve, reject) => {
     const child = spawn(env.KRILLINAI_CLI_PATH, args, {

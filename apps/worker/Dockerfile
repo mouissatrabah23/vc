@@ -38,7 +38,8 @@ ARG KRILLINAI_CMD_PKG=./cmd/cli
 # bookworm, so a dynamically linked binary would still work.
 ARG CGO_ENABLED=0
 
-RUN apt-get update \
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,15 +47,49 @@ WORKDIR /src
 
 # --no-checkout plus a blob filter fetches history cheaply, then materialises
 # exactly one revision. Works whether KRILLINAI_REF is a tag, branch or SHA.
+#
+# The clone is retried: a container build is one of the least reliable places
+# to do network I/O (constrained MTU, no PMTU discovery on many bridges,
+# shared CI egress), and a single transient TCP failure should not cost a
+# full image rebuild. Abort after 5 attempts rather than looping forever.
+# The low-speed guard turns a silently stalled transfer into a fast failure
+# that the retry loop can act on, instead of a multi-minute hang.
 RUN set -eux; \
-    git clone --no-checkout --filter=blob:none "${KRILLINAI_REPO}" .; \
+    git config --global http.lowSpeedLimit 1000; \
+    git config --global http.lowSpeedTime 30; \
+    ok=0; \
+    for attempt in 1 2 3 4 5; do \
+      if git clone --no-checkout --filter=blob:none "${KRILLINAI_REPO}" .; then \
+        ok=1; break; \
+      fi; \
+      echo "clone attempt ${attempt} failed; retrying" >&2; \
+      find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +; \
+      sleep 5; \
+    done; \
+    [ "${ok}" = 1 ] || { echo "clone failed after 5 attempts" >&2; exit 1; }; \
     git checkout --detach "${KRILLINAI_REF}"; \
     git --no-pager log -1 --format="krillinai-cli source: %H %cI %s"
 
 # Upstream go.mod declares `go 1.22`, which is why the builder is golang:1.22.
+# GOTOOLCHAIN=local pins the compiler to the base image: without it, a future
+# upstream go.mod bump would make Go silently download a different toolchain
+# at build time, quietly defeating the point of pinning the base image.
+#
+# Module download is a separate, retried step from the compile. `go build`
+# gives up on the first network error, and the module cache mount persists
+# between attempts, so each retry resumes rather than restarting. Once the
+# modules are local the compile itself needs no network at all.
+ENV GOTOOLCHAIN=local
 RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
     --mount=type=cache,id=gobuild,target=/root/.cache/go-build \
     set -eux; \
+    ok=0; \
+    for attempt in 1 2 3 4 5; do \
+      if go mod download all; then ok=1; break; fi; \
+      echo "go mod download attempt ${attempt} failed; retrying" >&2; \
+      sleep 5; \
+    done; \
+    [ "${ok}" = 1 ] || { echo "go mod download failed after 5 attempts" >&2; exit 1; }; \
     CGO_ENABLED="${CGO_ENABLED}" GOOS=linux \
       go build -trimpath -ldflags="-s -w" -o /out/krillinai-cli "${KRILLINAI_CMD_PKG}"; \
     ls -l /out/krillinai-cli
@@ -70,7 +105,8 @@ ARG YT_DLP_VERSION=2026.08.19
 # Supplied automatically by BuildKit.
 ARG TARGETARCH
 
-RUN apt-get update \
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -80,7 +116,7 @@ RUN set -eux; \
       arm64) asset=yt-dlp_linux_aarch64 ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH:-unset}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL --retry 3 --retry-delay 2 \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
       -o /out-ytdlp \
       "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/${asset}"; \
     chmod 0755 /out-ytdlp; \
@@ -95,17 +131,34 @@ ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     CI=true
 
-# corepack pins pnpm to the root package.json `packageManager` field, so the
-# image and a developer laptop resolve the identical pnpm version.
-RUN corepack enable
+# Corepack is upgraded before use, and pinned for reproducibility.
+#
+# The corepack bundled with node:22.12.0 carries npm registry signing keys that
+# have since been rotated, so it aborts with "Cannot find matching keyid" when
+# it tries to verify the pnpm tarball. Upgrading is the fix that KEEPS
+# signature verification on — the alternative floating around
+# (COREPACK_INTEGRITY_KEYS=0) just disables supply-chain verification.
+ARG COREPACK_VERSION=0.35.0
+RUN npm install -g "corepack@${COREPACK_VERSION}" \
+    && corepack enable \
+    && corepack --version
 
 WORKDIR /repo
 
 # Manifests only, so this layer stays cached until a dependency really changes.
+#
+# EVERY workspace manifest is copied, not just the worker's. pnpm-workspace.yaml
+# globs `apps/*` and `packages/*`, and `--frozen-lockfile` validates the
+# lockfile against the workspace it actually finds. Omitting apps/api and
+# apps/web makes that set disagree with the lockfile's importers, and the
+# install is refused. They are only read for validation — `--filter` below
+# still restricts what gets installed.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/types/package.json ./packages/types/
 COPY packages/db/package.json ./packages/db/
 COPY apps/worker/package.json ./apps/worker/
+COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
 
 # `@saas/worker...` (trailing dots) selects the worker plus its workspace
 # dependencies — apps/web and apps/api never enter this image.
@@ -144,7 +197,8 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 #                   ffmpeg silently renders tofu boxes
 #   gettext-base  — provides envsubst, used to render config.toml at startup
 #   tini          — PID 1 that forwards signals and reaps ffmpeg zombies
-RUN apt-get update \
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates \
          ffmpeg \

@@ -489,21 +489,33 @@ pnpm lint` in CI, Turborepo remote caching.
 
 ## Verified
 
-`pnpm install`, `pnpm build`, `pnpm typecheck`, `pnpm lint` and
-`pnpm format:check` all pass. The compiled API and worker were smoke-tested:
-`/healthz` returns 200, scaffolded routes return 501, unknown routes 404, and
-the worker registers both queue consumers.
+Workspace: `pnpm build`, `pnpm typecheck`, `pnpm lint` and `pnpm format:check`
+all pass. The compiled API and worker were smoke-tested: `/healthz` returns 200,
+scaffolded routes return 501, unknown routes 404, and the worker registers both
+queue consumers.
 
-The krillinai pins were checked against the live upstream repository rather than
-assumed: `./cmd/cli` exists, `go.mod` declares `go 1.22` (which is why the
-builder is `golang:1.22`), tag `v2.1.0` dereferences to commit
-`5090acc9…`, and `docker/config.toml.template` mirrors the real
-`config/config-example.toml` schema at that commit. `entrypoint.sh` was executed
-locally: it renders valid TOML, substitutes every placeholder, and applies the
-transcribe-key fallback.
+**The worker image builds and runs.** `docker build` completes end to end:
 
-**Not execute-verified:** Docker was unavailable on the machine used to scaffold
-this, so no stage of the image has actually been built — including the Go
-compile and the yt-dlp download. Also unverified: how the CLI locates its config
-file at runtime (see the Known gap in
-[apps/worker/README.md](apps/worker/README.md)).
+- `go build ./cmd/cli` succeeds against pinned commit `5090acc9`, producing a
+  42 MB static binary. The checkout was confirmed to be that exact commit
+  (`2026-06-16`, _"fix: preserve bilingual lines in vertical subtitles"_).
+- `yt-dlp` and `ffmpeg` are present; the image runs as `krillin` uid 10001.
+- The entrypoint renders `/app/config/config.toml` (mode 0600, owned by 10001)
+  from environment variables inside the real container.
+- `krillinai-cli --help` and `subtitle --help` run and list the full command
+  surface.
+
+**The config-path question is closed with evidence** — the CLI resolves
+`./config/config.toml` relative to its working directory; there is no
+`--config` flag. See
+[apps/worker/README.md](apps/worker/README.md#how-the-cli-finds-its-config-verified)
+for the test matrix. `runKrillinai` implements the confirmed behaviour.
+
+### Build environment caveat
+
+Verification ran against Docker Engine inside WSL, not Docker Desktop. That
+host had unreliable egress (path MTU 1468 against a 1500 interface), which
+caused sporadic failures fetching from `deb.debian.org`, `auth.docker.io`,
+`github.com` and `proxy.golang.org`. The Dockerfile now retries the network
+steps — apt, git clone and `go mod download` — so a transient failure no longer
+costs a full rebuild. On a healthy network none of those retries trigger.
