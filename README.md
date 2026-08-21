@@ -88,9 +88,34 @@ without root:
 
 ```bash
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
-export PATH="$HOME/.npm-global/bin:$PATH"          # add both to ~/.bashrc
+export PATH="$HOME/.npm-global/bin:$PATH"
 npm install -g corepack@latest
 corepack enable --install-directory ~/.npm-global/bin
+```
+
+To persist those two exports, put them in **`~/.profile` as well as
+`~/.bashrc`** — not `~/.bashrc` alone. Ubuntu's stock `~/.bashrc` starts with
+
+```bash
+case $- in
+    *i*) ;;
+      *) return;;      # <- non-interactive shells stop here
+esac
+```
+
+so anything appended to the end of it is invisible to `bash -lc`, to scripts,
+and to some terminal launchers. The symptom is confusing: `pnpm` works when you
+type it, but "command not found" the moment a script or task runner calls it,
+and `corepack --version` silently reports the old system copy.
+
+Make the PATH edit idempotent, since a login shell may source both files:
+
+```bash
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+case ":$PATH:" in
+  *":$HOME/.npm-global/bin:"*) ;;
+  *) export PATH="$HOME/.npm-global/bin:$PATH" ;;
+esac
 ```
 
 Ubuntu's `docker.io` package also omits the buildx and compose plugins, which
@@ -104,6 +129,39 @@ curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
   https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
 chmod +x ~/.docker/cli-plugins/docker-*
 ```
+
+### Network: clamp the WSL MTU
+
+WSL2's `eth0` comes up at MTU 1500, but the real path to the internet is often
+smaller. When it is, small requests succeed and large transfers hang forever —
+`git push` wedging indefinitely while ignoring SIGTERM, `apt-get` failing to
+fetch `.deb` files mid-build, `go mod download` timing out. Nothing reports an
+MTU problem; it just looks like flaky internet.
+
+Check the real ceiling (largest payload that survives with DF set, +28 for
+headers):
+
+```bash
+for s in 1472 1440 1400 1372; do
+  ping -c1 -W3 -M do -s $s 1.1.1.1 >/dev/null 2>&1 \
+    && { echo "ceiling $((s+28))"; break; }
+done
+```
+
+If it is below 1500, clamp `eth0` permanently. There is no `mtu=` key in
+`wsl.conf`; `[boot] command` is the supported hook and runs as root at distro
+start:
+
+```ini
+# /etc/wsl.conf
+[boot]
+systemd=true
+command = ip link set dev eth0 mtu 1400
+```
+
+Apply with `wsl --shutdown` from PowerShell, then reopen the terminal. Verify
+with `ip -o link show eth0`. Editing `/etc/wsl.conf` needs root; from PowerShell
+`wsl -d <distro> -u root` gets you there without a password.
 
 ### Editor
 
