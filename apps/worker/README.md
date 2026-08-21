@@ -158,6 +158,85 @@ panic: 无法打开日志文件: open app.log: permission denied
 This is why the CLI is never run with `cwd=/app`, where the application code
 lives root-owned. Each job's scratch directory is writable by uid 10001.
 
+## Scratch-directory lifecycle (verified)
+
+### Cleanup never follows the config symlink
+
+`removeJobWorkdir` uses `fs.rm(dir, { recursive: true, force: true })`, which
+operates on `lstat` semantics: it **unlinks** a symlink rather than descending
+into it. Verified against the real function in the built image — after cleaning
+a job directory containing the `config` symlink:
+
+| Assertion                                 | Result |
+| ----------------------------------------- | ------ |
+| job dir removed                           | true   |
+| `/app/config/config.toml` still exists    | true   |
+| config.toml sha256 unchanged              | true   |
+| config.toml inode unchanged               | true   |
+| config.toml mtime unchanged               | true   |
+| `/app/config` inode and entries unchanged | true   |
+
+This matters because the symlink target holds the platform's provider
+credentials for **every** job. Following it during cleanup would destroy them
+once and break all subsequent work. `resolveWithinWorkdir` is a second layer of
+defence: it refuses any path outside `JOB_WORKDIR`.
+
+### The job directory is writable before the CLI starts
+
+`createJobWorkdir` runs before any spawn and creates the directory `0700`,
+owned by the worker user. Measured in-container: mode `0700`, uid `10001`,
+process uid `10001`, `W_OK|X_OK` satisfied **before** `runKrillinai` is called.
+
+This ordering is load-bearing. The CLI opens `app.log` in its working directory
+during logger init, before argv is parsed, so a non-writable cwd kills it
+outright — see the panic documented above.
+
+### Where app.log goes, and what to keep
+
+`app.log` is written **inside the job directory** (mode `0600`) and is therefore
+deleted along with the rest of the scratch directory when the job settles.
+
+That loses nothing, because the CLI writes its structured logs to **both**
+`app.log` and stdout, and `runKrillinai` already captures stdout and stderr.
+Forward those into the worker's own logger rather than trying to preserve the
+file.
+
+The one case `app.log` can never cover is a pre-argv panic: the panic happens
+_because_ the log file could not be created, so no file exists. Such panics go
+to **stderr** with exit code `2`, and `runKrillinai` surfaces them on
+`KrillinaiError.stderr` — verified:
+
+```
+error name     : KrillinaiError
+exitCode       : 2
+stderr captured: "panic: 无法打开日志文件: open app.log: permission denied"
+```
+
+So early panics are visible to our own logging, not silent. Persisting
+`app.log` would only be worth it if you want the CLI's own log file attached to
+failed jobs as an artifact; the information is otherwise already captured.
+
+## `voices` as a health check — local only, zero cost
+
+`krillinai-cli voices` makes **no network call and validates no credentials**.
+Verified by running it with the network stack removed entirely:
+
+| Test                              | Result                                              |
+| --------------------------------- | --------------------------------------------------- |
+| `--network none`                  | exit 0, full 10-voice list returned                 |
+| `--network none` + empty API keys | exit 0, list still returned                         |
+| DNS check in the same sandbox     | `api.openai.com` unresolvable, confirming no egress |
+
+It is therefore safe as a zero-cost CI or startup probe. **But note what it does
+and does not prove**: it returns `{"ok":true}` even with no config file and no
+credentials at all. It proves the binary executes and its working directory is
+usable — nothing more.
+
+To make it a meaningful config check, assert on the log line rather than the
+exit code: config loaded emits `config/config.go:223` / `已找到配置文件`,
+while a missing config emits `config/config.go:220` / `未找到配置文件`.
+Credential validity can only be established by a real provider call.
+
 ## Command surface (from the built binary)
 
 ```
