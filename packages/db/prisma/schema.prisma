@@ -23,6 +23,13 @@ datasource db {
   url = env("DATABASE_URL")
   // Direct session connection — Prisma Migrate cannot run DDL through a pooler.
   directUrl = env("DIRECT_URL")
+  // `prisma migrate dev` replays the whole migration history into a throwaway
+  // shadow database to detect drift. Our RLS migration references auth.users,
+  // which would not exist in a database Prisma created from nothing, so the
+  // shadow database is pre-created WITH the Supabase shim by
+  // docker/postgres/init/00-shim.sql. Prisma resets its contents, not the
+  // database itself. Only `migrate dev` uses it; `migrate deploy` does not.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 // =============================================================================

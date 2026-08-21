@@ -63,38 +63,100 @@ HTTP request.
 
 ## Prerequisites
 
-| Tool    | Version    | Notes                                              |
-| ------- | ---------- | -------------------------------------------------- |
-| Node.js | ≥ 20.11    | 22 LTS recommended                                 |
-| pnpm    | 9.15.4     | Installed automatically by Corepack — see below    |
-| Docker  | any recent | Only for local Postgres/Redis and the worker image |
+**Develop from inside WSL2, not from the Windows host.** This is a requirement,
+not a preference — see [Why WSL-native](#why-wsl-native) below.
 
-pnpm is pinned via the `packageManager` field, so Corepack fetches the exact
-version:
+| Tool          | Version    | Notes                                               |
+| ------------- | ---------- | --------------------------------------------------- |
+| WSL2 + Ubuntu | any recent | Windows only; on Linux/macOS just use the native OS |
+| Node.js       | >= 20.11   | **installed inside WSL**, 22 LTS recommended        |
+| Docker Engine | any recent | inside WSL, or Docker Desktop with WSL integration  |
+| pnpm          | 9.15.4     | provisioned by Corepack, see below                  |
+
+### One-time WSL setup
 
 ```bash
-corepack enable
+# inside a WSL (Ubuntu) shell
+sudo apt update && sudo apt install -y nodejs npm git docker.io
+sudo usermod -aG docker "$USER"     # then close and reopen the shell
 ```
 
-<details>
-<summary>Windows: <code>corepack enable</code> fails with EPERM</summary>
+Corepack shipped with Ubuntu's Node may be too old — versions before ~0.30 carry
+npm registry signing keys that have since been rotated, and fail with
+`Cannot find matching keyid` when they try to fetch pnpm. Install a current one
+without root:
 
-Corepack writes shims into the Node install directory, which needs elevation.
-Either run the command from an admin terminal, or install the shims somewhere
-user-writable and add that to your `PATH`:
-
-```powershell
-corepack enable --install-directory "$env:LOCALAPPDATA\corepack-shims"
-$env:PATH = "$env:LOCALAPPDATA\corepack-shims;$env:PATH"   # add permanently via System Settings
+```bash
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+export PATH="$HOME/.npm-global/bin:$PATH"          # add both to ~/.bashrc
+npm install -g corepack@latest
+corepack enable --install-directory ~/.npm-global/bin
 ```
 
-</details>
+Ubuntu's `docker.io` package also omits the buildx and compose plugins, which
+`docker compose` and the worker image build both need. Same user-local fix:
+
+```bash
+mkdir -p ~/.docker/cli-plugins
+curl -fsSL -o ~/.docker/cli-plugins/docker-buildx \
+  https://github.com/docker/buildx/releases/download/v0.30.1/buildx-v0.30.1.linux-amd64
+curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
+chmod +x ~/.docker/cli-plugins/docker-*
+```
+
+### Editor
+
+Install the **WSL** extension for VS Code, then from a WSL shell inside the
+project:
+
+```bash
+code .
+```
+
+VS Code reopens attached to the WSL filesystem and its Docker daemon. The
+integrated terminal, the language server, and every `pnpm` script then run in
+the same place the database does.
+
+---
+
+## Why WSL-native
+
+The project must live on the **WSL filesystem** (`~/projects/vc`), never under
+`/mnt/c/...`. Two independent reasons:
+
+**1. The database is only reachable from where Docker runs.** Postgres runs in a
+container inside WSL and publishes on WSL's `localhost`. Prisma, the API and the
+worker all need to reach it. Running them from the Windows host puts a VM
+boundary in the middle of every connection, and `prisma migrate`, `db:studio`
+and `pnpm dev` all break in ways that look like unrelated bugs.
+
+**2. Windows-mounted paths are slow for Node workloads.** Every file operation
+under `/mnt/c` crosses a 9p filesystem bridge, and package managers do hundreds
+of thousands of them. Measured on this project, same machine, same command:
+
+| `pnpm install` location | Time    |
+| ----------------------- | ------- |
+| `/mnt/c/...`            | 1m 47s  |
+| `~/projects/vc` (ext4)  | **34s** |
+
+The gap widens for `pnpm dev`, where file watching is involved.
+
+> If you have a hard requirement to run something from the Windows host, don't
+> straddle the boundary silently — set up explicit forwarding
+> (`netsh interface portproxy`, or WSL2 mirrored networking mode) and document
+> which tool needs it and why.
 
 ---
 
 ## Quick start
 
 ```bash
+# inside WSL, on the WSL filesystem
+git clone https://github.com/mouissatrabah23/vc.git ~/projects/vc
+cd ~/projects/vc
+code .                        # optional: reopen in VS Code attached to WSL
+
 # 1. Environment — do this first; several scripts read the root .env
 cp .env.example .env
 
@@ -104,34 +166,52 @@ pnpm install
 # 3. Local Postgres + Redis
 docker compose up -d
 
-# 4. Create the database schema (migrations, NOT db:push — see note below)
-pnpm db:deploy
-
-# 5. Run everything
-pnpm dev
+# 4. Create the database schema
+pnpm db:migrate               # or db:deploy for a non-interactive apply
 ```
-
-| Service | URL                                                          |
-| ------- | ------------------------------------------------------------ |
-| Web     | http://localhost:3000                                        |
-| API     | http://localhost:4000/healthz · http://localhost:4000/readyz |
-| Worker  | no HTTP surface — watch the terminal                         |
-
-`pnpm dev` runs all three apps plus watch-mode compilation of the shared
-packages. Turborepo builds `packages/types` and `packages/db` first, so editing
-a shared type recompiles it and the consuming apps pick it up on the next
-reload.
 
 > **Use migrations, never `db:push`.** `db:push` syncs tables only. It skips the
 > hand-written migration that enables Row Level Security and creates the credit
 > functions, leaving a database that looks correct but has no row level security
 > and no `deduct_credits`. See [packages/db/README.md](packages/db/README.md).
 
+```bash
+# 5. Run everything
+pnpm dev
+```
+
+| Service       | URL                                                          |
+| ------------- | ------------------------------------------------------------ |
+| Web           | http://localhost:3000                                        |
+| API           | http://localhost:4000/healthz · http://localhost:4000/readyz |
+| Prisma Studio | http://localhost:5555 (`pnpm db:studio`)                     |
+| Worker        | no HTTP surface — watch the terminal                         |
+
+WSL2 forwards these to the Windows host, so a Windows browser can open
+`http://localhost:3000` normally. If it ever cannot, restart WSL
+(`wsl --shutdown` from PowerShell) rather than adding port-forwarding rules.
+
 **Verify it is alive:**
 
 ```bash
-curl http://localhost:4000/healthz   # {"ok":true,"data":{"status":"ok",...}}
-curl http://localhost:4000/readyz    # checks Postgres + Redis, 503 if either is down
+curl http://localhost:4000/healthz
+curl http://localhost:4000/readyz    # database + redis both "ok" when healthy
+```
+
+A healthy `/readyz` looks like this — if either dependency reports `down`, the
+container for it is not running:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "ok",
+    "checks": {
+      "database": { "status": "ok", "latencyMs": 4 },
+      "redis": { "status": "ok", "latencyMs": 3 }
+    }
+  }
+}
 ```
 
 ---

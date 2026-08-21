@@ -17,11 +17,50 @@
 -- 1. Link public.users to Supabase auth, and keep it in sync
 -- -----------------------------------------------------------------------------
 
--- Prisma cannot express a FK into the auth schema. Without it, public.users
--- rows could outlive the auth user they mirror.
-ALTER TABLE public.users
-  ADD CONSTRAINT users_id_fkey
-  FOREIGN KEY (id) REFERENCES auth.users (id) ON DELETE CASCADE;
+-- NO FOREIGN KEY to auth.users, deliberately. Triggers instead.
+--
+-- A real FK (public.users.id -> auth.users.id ON DELETE CASCADE) is the
+-- obvious modelling choice and it works at runtime, but it makes
+-- `prisma migrate dev` unusable: Prisma introspects the shadow database after
+-- replaying migrations and rejects the cross-schema reference with
+--   P4002 ... `public.users` points to `auth.users` in constraint
+--   `users_id_fkey`. Please add `auth` to your `schemas` property
+--
+-- Satisfying that demand means enabling the `multiSchema` preview feature and
+-- listing `auth` as a managed schema — at which point Prisma believes it owns
+-- auth.users and will happily generate `DROP TABLE auth.users` against a real
+-- Supabase project, because that table is not in schema.prisma. Losing one
+-- constraint is a far smaller risk than handing Prisma a loaded gun pointed at
+-- Supabase's auth table.
+--
+-- The two behaviours the FK would have given us are reproduced below:
+--   * rows cannot outlive their auth user  -> AFTER DELETE trigger
+--   * rows cannot exist without one        -> public.users is only ever written
+--                                             by the AFTER INSERT trigger and
+--                                             service_role
+-- What is genuinely lost is enforcement against a direct bad INSERT by
+-- service_role. That is an API-layer concern, not a client-reachable one.
+
+CREATE OR REPLACE FUNCTION public.handle_deleted_auth_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  -- Mirrors ON DELETE CASCADE. Note that payments.user_id is ON DELETE
+  -- RESTRICT, so deleting a user who has payment history raises here and
+  -- aborts the auth.users delete too — which is the intended behaviour:
+  -- settle or anonymise the payments first.
+  DELETE FROM public.users WHERE id = OLD.id;
+  RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_deleted ON auth.users;
+CREATE TRIGGER on_auth_user_deleted
+  AFTER DELETE ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_deleted_auth_user();
 
 -- Signup provisioning. A user with no wallet is a broken account: the first
 -- deduct_credits() call would fail on a missing row. Creating both in one
