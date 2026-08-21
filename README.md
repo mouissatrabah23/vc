@@ -104,8 +104,8 @@ pnpm install
 # 3. Local Postgres + Redis
 docker compose up -d
 
-# 4. Create the database schema
-pnpm db:push
+# 4. Create the database schema (migrations, NOT db:push — see note below)
+pnpm db:deploy
 
 # 5. Run everything
 pnpm dev
@@ -122,6 +122,11 @@ packages. Turborepo builds `packages/types` and `packages/db` first, so editing
 a shared type recompiles it and the consuming apps pick it up on the next
 reload.
 
+> **Use migrations, never `db:push`.** `db:push` syncs tables only. It skips the
+> hand-written migration that enables Row Level Security and creates the credit
+> functions, leaving a database that looks correct but has no row level security
+> and no `deduct_credits`. See [packages/db/README.md](packages/db/README.md).
+
 **Verify it is alive:**
 
 ```bash
@@ -135,20 +140,20 @@ curl http://localhost:4000/readyz    # checks Postgres + Redis, 503 if either is
 
 Run from the repo root.
 
-| Command                    | What it does                                           |
-| -------------------------- | ------------------------------------------------------ |
-| `pnpm dev`                 | All apps in watch mode                                 |
-| `pnpm build`               | Build every workspace in dependency order              |
-| `pnpm typecheck`           | `tsc --noEmit` everywhere                              |
-| `pnpm lint`                | ESLint (web)                                           |
-| `pnpm format`              | Prettier, whole repo                                   |
-| `pnpm clean`               | Delete build output and caches                         |
-| `pnpm db:generate`         | Regenerate the Prisma client after a schema edit       |
-| `pnpm db:push`             | Sync the schema to the dev database, no migration file |
-| `pnpm db:migrate`          | Create and apply a named migration                     |
-| `pnpm db:studio`           | Prisma Studio on http://localhost:5555                 |
-| `pnpm docker:up` / `:down` | Start / stop Postgres + Redis                          |
-| `pnpm docker:reset`        | Stop **and drop all data**                             |
+| Command                    | What it does                                        |
+| -------------------------- | --------------------------------------------------- |
+| `pnpm dev`                 | All apps in watch mode                              |
+| `pnpm build`               | Build every workspace in dependency order           |
+| `pnpm typecheck`           | `tsc --noEmit` everywhere                           |
+| `pnpm lint`                | ESLint (web)                                        |
+| `pnpm format`              | Prettier, whole repo                                |
+| `pnpm clean`               | Delete build output and caches                      |
+| `pnpm db:generate`         | Regenerate the Prisma client after a schema edit    |
+| `pnpm db:deploy`           | Apply pending migrations (this is the one you want) |
+| `pnpm db:migrate`          | Create and apply a named migration                  |
+| `pnpm db:studio`           | Prisma Studio on http://localhost:5555              |
+| `pnpm docker:up` / `:down` | Start / stop Postgres + Redis                       |
+| `pnpm docker:reset`        | Stop **and drop all data**                          |
 
 Scope any task to one workspace with a filter:
 

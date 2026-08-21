@@ -1,9 +1,17 @@
-// Placeholder schema — enough shape for `prisma generate` to produce a client
-// and for the apps to compile. Model the real domain in a later stage.
+// Video translation / dubbing SaaS — Algeria market, single currency (DZD).
 //
-//   pnpm db:generate   regenerate the client after editing this file
-//   pnpm db:push       sync the local dev database without a migration
-//   pnpm db:migrate    create + apply a named migration
+// Conventions:
+//   - snake_case in Postgres, camelCase in the client (@map / @@map everywhere)
+//   - every timestamp is timestamptz; storing local time in a system that bills
+//     users across timezones is a bug waiting to happen
+//   - money and credits are numeric/Decimal, never float — binary floating point
+//     cannot represent 0.10 exactly, and rounding drift in a balance is real money
+//   - `users.id` is the Supabase auth user id; the FK to auth.users, the RLS
+//     policies, the CHECK constraints and the credit functions live in
+//     migrations/*_rls_and_credit_functions/migration.sql, because Prisma's
+//     schema language cannot express any of them
+//
+// Regenerate after editing:  pnpm db:generate
 
 generator client {
   provider = "prisma-client-js"
@@ -12,168 +20,256 @@ generator client {
 datasource db {
   provider = "postgresql"
   // Pooled connection used at runtime (PgBouncer on Supabase).
-  url       = env("DATABASE_URL")
+  url = env("DATABASE_URL")
   // Direct session connection — Prisma Migrate cannot run DDL through a pooler.
   directUrl = env("DIRECT_URL")
 }
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // Identity
-// -----------------------------------------------------------------------------
+// =============================================================================
 
-/// Mirrors a Supabase `auth.users` row. `id` is the Supabase user id, so no
-/// mapping table is needed between the JWT `sub` claim and our tables.
+/// Mirrors a row in Supabase `auth.users`. `id` IS the Supabase user id, so a
+/// JWT's `sub` claim joins straight onto this table with no mapping layer.
+///
+/// The FK `users.id -> auth.users(id) ON DELETE CASCADE` is added in raw SQL:
+/// Prisma cannot model a table in the `auth` schema that Supabase owns. A
+/// trigger on auth.users inserts the mirror row and its wallet on signup.
 model User {
-  id        String   @id @db.Uuid
-  email     String   @unique
-  name      String?
-  avatarUrl String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id String @id @db.Uuid
 
-  projects      Project[]
-  jobs          Job[]
-  subscriptions Subscription[]
+  /// Mirrored from auth.users.email. Store it lowercased: Postgres `=` is
+  /// case-sensitive, and citext would add an extension dependency for a column
+  /// whose source of truth is Supabase Auth anyway.
+  email String @unique @db.VarChar(320)
+  fullName  String?  @map("full_name") @db.VarChar(200)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  wallet   CreditWallet?
+  tasks    Task[]
+  payments Payment[]
 
   @@map("users")
 }
 
-// -----------------------------------------------------------------------------
-// Workspace
-// -----------------------------------------------------------------------------
+// =============================================================================
+// Credits — wallet + append-only ledger
+// =============================================================================
 
-model Project {
-  id        String   @id @default(uuid()) @db.Uuid
-  ownerId   String   @db.Uuid
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+/// One wallet per user. `balanceCredits` is a CACHE of the ledger, maintained
+/// only by deduct_credits() / refund_credits() / the payment credit function,
+/// which hold a row lock while they write both the ledger row and this column.
+///
+/// The authoritative value is always SUM(wallet_transactions.amount). See
+/// `wallet_balance_drift` in the RLS migration for the reconciliation view.
+model CreditWallet {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  balanceCredits Decimal  @default(0) @map("balance_credits") @db.Decimal(10, 2)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  jobs   Job[]
-  assets Asset[]
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
 
-  @@index([ownerId])
-  @@map("projects")
+  @@map("credit_wallets")
 }
 
-// -----------------------------------------------------------------------------
-// Processing
-// -----------------------------------------------------------------------------
+enum WalletTransactionType {
+  deposit
+  deduction
+  refund
 
-enum JobStatus {
-  queued
-  running
-  succeeded
-  failed
-  cancelled
+  @@map("wallet_transaction_type")
 }
 
-/// One krillinai-cli pipeline run. Mirrors the BullMQ job so status survives a
-/// Redis flush and stays queryable after the BullMQ record is evicted.
-model Job {
-  id     String    @id @default(uuid()) @db.Uuid
-  userId String    @db.Uuid
-  projectId String @db.Uuid
+/// Append-only ledger. Every credit movement is one immutable row.
+///
+/// SIGN CONVENTION: `amount` is signed, so the balance is a plain
+/// SUM(amount) with no per-type branching:
+///   deposit   > 0   (credits bought)
+///   refund    > 0   (credits returned after a failed task)
+///   deduction < 0   (credits consumed by a task)
+/// A CHECK constraint enforces that sign, so a mis-signed row cannot be
+/// inserted at all — see the RLS migration.
+///
+/// UPDATE and DELETE are revoked from every role including the backend's
+/// service_role: a ledger you can edit is not a ledger. Corrections are made
+/// by appending a compensating row.
+model WalletTransaction {
+  id       String                @id @default(uuid()) @db.Uuid
+  walletId String                @map("wallet_id") @db.Uuid
+  amount   Decimal               @db.Decimal(10, 2)
+  type     WalletTransactionType
 
-  /// Matches @saas/types MEDIA_JOB_NAMES, e.g. `media.transcribe`.
-  type   String
-  status JobStatus @default(queued)
+  /// Set on deduction/refund rows so a task's credit history is one indexed lookup.
+  relatedTaskId String? @map("related_task_id") @db.Uuid
 
-  /// BullMQ job id, for cross-referencing queue state. Null until enqueued.
-  queueJobId String?
+  /// Set on deposit rows, linking the credits back to the payment that bought them.
+  relatedPaymentId String? @map("related_payment_id") @db.Uuid
 
-  /// Frozen TranscodeOptions the job was submitted with.
-  input  Json
-  /// JobResult payload once the job settles.
-  output Json?
-  error  Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  progress Int @default(0)
+  wallet         CreditWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  relatedTask    Task?        @relation(fields: [relatedTaskId], references: [id], onDelete: SetNull)
+  relatedPayment Payment?     @relation(fields: [relatedPaymentId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime  @default(now())
-  startedAt   DateTime?
-  completedAt DateTime?
-  updatedAt   DateTime  @updatedAt
+  // Statement ordering, and the index that makes SUM(amount) per wallet cheap.
+  @@index([walletId, createdAt(sort: Desc)])
+  @@index([relatedTaskId])
+  @@index([relatedPaymentId])
+  @@map("wallet_transactions")
+}
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assets  Asset[]
+// =============================================================================
+// Work
+// =============================================================================
 
+enum TaskStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+
+  @@map("task_status")
+}
+
+enum TaskMode {
+  /// Transcribe, translate, synthesise dubbing, render video.
+  FULL_PIPELINE
+  /// Transcribe and translate only; emit subtitle files, no audio or render.
+  SUBTITLES_ONLY
+
+  @@map("task_mode")
+}
+
+/// One krillinai-cli pipeline run.
+///
+/// `videoDurationSeconds` and `creditsCost` are NOT NULL: the API probes the
+/// upload and prices it BEFORE inserting the row, because credits are deducted
+/// up front. A task that exists without a known price cannot be billed
+/// correctly, so the schema refuses to represent that state.
+model Task {
+  id     String     @id @default(uuid()) @db.Uuid
+  userId String     @map("user_id") @db.Uuid
+  status TaskStatus @default(PENDING)
+  mode   TaskMode
+
+  /// BCP-47 tags, e.g. `en`, `ar-DZ`, `fr`.
+  originLang String @map("origin_lang") @db.VarChar(35)
+  targetLang String @map("target_lang") @db.VarChar(35)
+
+  videoDurationSeconds Int     @map("video_duration_seconds")
+  creditsCost          Decimal @map("credits_cost") @db.Decimal(10, 2)
+
+  /// R2 object key of the source upload. Never a browser-facing URL.
+  inputStorageKey String @map("input_storage_key") @db.VarChar(1024)
+
+  /// Artifacts produced on success: subtitle files, dubbed audio, rendered video.
+  /// Null until the task completes.
+  outputManifest Json? @map("output_manifest")
+
+  /// Operator-facing failure reason. Null unless status = FAILED.
+  errorMessage String? @map("error_message")
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  startedAt   DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+
+  @@index([userId, createdAt(sort: Desc)])
   @@index([userId, status])
-  @@index([projectId, createdAt])
-  @@map("jobs")
+  // Partial-index candidate for the worker's queue-reconciliation sweep.
+  @@index([status, createdAt])
+  @@map("tasks")
 }
 
-/// An object stored in R2 — either a source upload or a job output artifact.
-model Asset {
-  id        String   @id @default(uuid()) @db.Uuid
-  projectId String   @db.Uuid
-  jobId     String?  @db.Uuid
+// =============================================================================
+// Money
+// =============================================================================
 
-  /// R2 object key. Unique so an upload is never registered twice.
-  storageKey  String  @unique
-  kind        String
-  format      String
-  sizeBytes   BigInt
-  language    String?
-  contentType String?
+enum PaymentProvider {
+  CHARGILY
 
-  createdAt DateTime @default(now())
-
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  job     Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
-
-  @@index([projectId])
-  @@index([jobId])
-  @@map("assets")
+  @@map("payment_provider")
 }
 
-// -----------------------------------------------------------------------------
-// Billing (Chargily)
-// -----------------------------------------------------------------------------
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
 
-enum SubscriptionStatus {
-  active
-  past_due
-  cancelled
-  expired
+  @@map("payment_status")
 }
 
-model Subscription {
-  id     String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
+/// A credit purchase. Amounts are in DZD; Chargily settles in dinar only.
+///
+/// `onDelete: Restrict` on the user relation is deliberate. Deleting a
+/// Supabase auth user cascades into `users`, and without Restrict it would
+/// silently destroy payment history. Restrict turns account deletion into an
+/// explicit decision: settle or anonymise the payments first.
+model Payment {
+  id       String          @id @default(uuid()) @db.Uuid
+  userId   String          @map("user_id") @db.Uuid
+  provider PaymentProvider @default(CHARGILY)
 
-  planId String
-  status SubscriptionStatus @default(active)
+  /// Gross amount charged, in DZD. Minor units are the `.00` of the numeric.
+  amountDzd Decimal @map("amount_dzd") @db.Decimal(12, 2)
 
-  /// Chargily checkout id that opened this subscription period.
-  chargilyCheckoutId String? @unique
+  /// Credits this payment grants once status becomes PAID.
+  creditsPurchased Decimal @map("credits_purchased") @db.Decimal(10, 2)
 
-  currentPeriodStart DateTime
-  currentPeriodEnd   DateTime
-  cancelAtPeriodEnd  Boolean  @default(false)
+  /// Chargily checkout id. Unique so a webhook replay cannot create a second
+  /// payment row for the same checkout.
+  chargilyCheckoutId String? @unique @map("chargily_checkout_id") @db.VarChar(255)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status PaymentStatus @default(PENDING)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  paidAt    DateTime? @map("paid_at") @db.Timestamptz(6)
 
-  @@index([userId, status])
-  @@map("subscriptions")
+  user         User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions WalletTransaction[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("payments")
 }
 
-/// Append-only log of Chargily webhooks. `eventId` is unique, which makes
-/// webhook handling idempotent when Chargily retries a delivery.
+// =============================================================================
+// Webhook idempotency
+// =============================================================================
+
+/// Exists solely so a redelivered webhook is a no-op.
+///
+/// The handler INSERTs here first. A unique violation means "already seen" and
+/// the delivery is acknowledged without re-running any side effect. Chargily
+/// retries on non-2xx, so without this a network blip during processing would
+/// credit a wallet twice.
+///
+/// Uniqueness is on (provider, externalEventId) rather than externalEventId
+/// alone: provider id spaces are independent, and a second provider issuing a
+/// colliding id would otherwise silently drop a real event.
 model WebhookEvent {
-  id          String    @id @default(uuid()) @db.Uuid
-  provider    String    @default("chargily")
-  eventId     String
-  type        String
-  payload     Json
-  processedAt DateTime?
-  createdAt   DateTime  @default(now())
+  id              String @id @default(uuid()) @db.Uuid
+  provider        String @db.VarChar(50)
+  externalEventId String @map("external_event_id") @db.VarChar(255)
 
-  @@unique([provider, eventId])
+  /// Raw provider payload, stored before parsing so a handler bug is replayable.
+  payload Json
+
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  /// Null until the side effects have been applied successfully. A row with a
+  /// null processedAt and an old receivedAt is a stuck delivery worth alerting on.
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(6)
+
+  @@unique([provider, externalEventId])
+  @@index([processedAt])
   @@map("webhook_events")
 }
