@@ -139,8 +139,19 @@ ALTER TABLE public.wallet_transactions
     (type = 'deduction' AND amount < 0)
   );
 
--- A deduction or refund without a task, or a deposit without a payment, is an
--- unattributable movement of money. Allowed only where it makes sense.
+-- Cross-field attribution: a movement may only carry the reference that makes
+-- sense for its type. A deposit is payment-attributed and must not name a task;
+-- a deduction or refund is task-attributed and must not name a payment.
+--
+-- Note what this deliberately does NOT require: a deposit may have a NULL
+-- related_payment_id. That is the operator grant path — hand-crediting a tester
+-- or issuing goodwill credits without inventing a fake Payment row. Such a
+-- deposit is intentionally unattributed, and `SELECT * FROM wallet_transactions
+-- WHERE type = 'deposit' AND related_payment_id IS NULL` is the audit query
+-- that lists every credit granted outside a real sale.
+--
+-- Deposits that DO originate from a sale are linked by the payment crediting
+-- path, which always passes the payment id; nothing here weakens that.
 ALTER TABLE public.wallet_transactions
   ADD CONSTRAINT wallet_transactions_attribution_ck CHECK (
     (type = 'deposit' AND related_task_id IS NULL) OR

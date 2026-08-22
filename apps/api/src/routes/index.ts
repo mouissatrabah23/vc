@@ -1,15 +1,20 @@
 /**
  * API v1 router — route surface only.
  *
- * Every handler below is a deliberate 501. The shape of the API is settled
- * here so the web client can be typed against it; the bodies land in the next
- * stage. Add real handlers by replacing the `notImplemented` calls.
+ * Implemented so far: `/me` (Phase 1) and `/uploads` (Phase 3), both mounted
+ * from their own modules below.
+ *
+ * The handlers still written inline here are deliberate 501s. The shape of the
+ * API is settled so the web client can be typed against it; the bodies land in
+ * later phases. Implement one by moving it into its own router module and
+ * mounting it, the way `/uploads` is.
  */
 
 import { Router } from 'express';
 import { AppError } from '../http/errors.js';
 import { asyncHandler } from '../http/middleware.js';
 import { meRouter } from './me.js';
+import { uploadsRouter } from './uploads.js';
 
 export const v1Router: Router = Router();
 
@@ -35,17 +40,6 @@ projects.get(
   '/:projectId',
   asyncHandler(async () => {
     throw AppError.notImplemented('Get project');
-  }),
-);
-
-// --- Uploads (presigned R2 PUT) --------------------------------------------
-
-const uploads: Router = Router();
-
-uploads.post(
-  '/presign',
-  asyncHandler(async () => {
-    throw AppError.notImplemented('Presigned upload');
   }),
 );
 
@@ -111,7 +105,7 @@ webhooks.post(
 
 v1Router.use('/me', meRouter);
 v1Router.use('/projects', projects);
-v1Router.use('/uploads', uploads);
+v1Router.use('/uploads', uploadsRouter);
 v1Router.use('/jobs', jobs);
 v1Router.use('/billing', billing);
 v1Router.use('/webhooks', webhooks);

@@ -15,5 +15,6 @@ export * from './queues.js';
 export * from './jobs.js';
 export * from './media.js';
 export * from './billing.js';
+export * from './pricing.js';
 export * from './storage.js';
 export * from './api.js';

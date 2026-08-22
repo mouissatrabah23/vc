@@ -3,10 +3,12 @@
 A pnpm workspace driven by Turborepo: a Next.js front end, an Express REST API,
 and a BullMQ worker that shells out to `krillinai-cli`.
 
-**Status: scaffolding.** The structure, shared contracts, build pipeline and
-local dev loop are complete and verified. Business logic is deliberately absent
-— API routes return `501 Not Implemented` and job processors throw
-`UnimplementedProcessorError`, so the gaps are loud rather than silent.
+**Status: early build.** The structure, shared contracts, build pipeline and
+local dev loop are complete and verified. Auth + RLS (Phase 1) and media
+uploads, probing and credit quoting (Phase 3) are implemented. The rest of the
+business logic is deliberately absent — the remaining API routes return
+`501 Not Implemented` and job processors throw `UnimplementedProcessorError`,
+so the gaps are loud rather than silent.
 
 ---
 
@@ -66,12 +68,13 @@ HTTP request.
 **Develop from inside WSL2, not from the Windows host.** This is a requirement,
 not a preference — see [Why WSL-native](#why-wsl-native) below.
 
-| Tool          | Version    | Notes                                               |
-| ------------- | ---------- | --------------------------------------------------- |
-| WSL2 + Ubuntu | any recent | Windows only; on Linux/macOS just use the native OS |
-| Node.js       | >= 20.11   | **installed inside WSL**, 22 LTS recommended        |
-| Docker Engine | any recent | inside WSL, or Docker Desktop with WSL integration  |
-| pnpm          | 9.15.4     | provisioned by Corepack, see below                  |
+| Tool          | Version    | Notes                                                     |
+| ------------- | ---------- | --------------------------------------------------------- |
+| WSL2 + Ubuntu | any recent | Windows only; on Linux/macOS just use the native OS       |
+| Node.js       | >= 20.11   | **installed inside WSL**, 22 LTS recommended              |
+| Docker Engine | any recent | inside WSL, or Docker Desktop with WSL integration        |
+| pnpm          | 9.15.4     | provisioned by Corepack, see below                        |
+| ffmpeg        | any recent | supplies `ffprobe`, which the API uses to measure uploads |
 
 ### One-time WSL setup
 
@@ -708,8 +711,29 @@ Roughly in dependency order:
 1. **Auth** — verify Supabase JWTs in an API middleware using
    `SUPABASE_JWT_SECRET`; attach the user to the request; enable RLS on every
    table the anon key can reach.
-2. **Uploads** — implement `POST /api/v1/uploads/presign` against R2 with
-   `@aws-sdk/client-s3` (`region: "auto"`, `forcePathStyle: true`).
+2. ~~**Uploads**~~ — **done.** Two endpoints, both behind `requireAuth`:
+
+   `POST /api/v1/uploads/presign` takes `{ fileName, contentType, sizeBytes }`
+   and returns a presigned PUT the browser sends the file to directly; media
+   never transits the API. `content-length` is bound into the signature, so the
+   size limit is enforced by R2 rather than trusted from the client. The
+   filename is used only to recover an extension — the key is
+   `uploads/{userId}/{uuid}.{ext}`, and the user id in that path is what
+   authorises a later probe.
+
+   `POST /api/v1/uploads/probe` takes `{ key }`, HEADs the stored object for its
+   real size, runs `ffprobe` against a short-lived presigned GET to read
+   duration and codecs, rejects anything unreadable / silent / over the limits,
+   and returns a credit quote for every task mode alongside the wallet balance.
+   It writes nothing and is safe to repeat.
+
+   Pricing lives only in `apps/api/src/pricing.ts`, driven by
+   `CREDITS_PER_MINUTE_*` and `MIN_CREDITS_PER_TASK`. **Those rates are
+   provisional placeholders** pending a measured provider invoice — see the
+   notes in `.env.example`. A quote is a display price, not a hold: nothing is
+   reserved, so task creation must re-price from the duration it reads and must
+   never accept a credit amount from the client.
+
 3. **Job submission** — validate the payload with zod, insert a `Job` row, then
    `enqueueMediaJob`. Store the returned BullMQ id in `Job.queueJobId`.
 4. **Worker processors** — fill in `processMediaJob`: download from R2, build
