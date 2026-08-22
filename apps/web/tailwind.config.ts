@@ -6,7 +6,12 @@ import animate from 'tailwindcss-animate';
 // than a second Tailwind palette.
 const config: Config = {
   darkMode: ['class'],
-  content: ['./src/app/**/*.{ts,tsx}', './src/components/**/*.{ts,tsx}', './src/lib/**/*.{ts,tsx}'],
+  content: [
+    './src/app/**/*.{ts,tsx}',
+    './src/components/**/*.{ts,tsx}',
+    './src/lib/**/*.{ts,tsx}',
+    './src/hooks/**/*.{ts,tsx}',
+  ],
   theme: {
     container: {
       center: true,
@@ -47,6 +52,10 @@ const config: Config = {
         card: {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
+        },
+        success: {
+          DEFAULT: 'hsl(var(--success))',
+          foreground: 'hsl(var(--success-foreground))',
         },
       },
       borderRadius: {

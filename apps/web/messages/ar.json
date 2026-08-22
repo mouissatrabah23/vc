@@ -1,0 +1,74 @@
+{
+  "brand": {
+    "name": "صوتك",
+    "tagline": "ترجمة ودبلجة الفيديو بالذكاء الاصطناعي",
+    "pitch": "حوّل الفيديوهات إلى العربية والفرنسية والإنجليزية مع ترجمة نصية ودبلجة صوتية طبيعية.",
+    "feature_subtitles": "ترجمة نصية دقيقة",
+    "feature_dubbing": "دبلجة بأصوات طبيعية",
+    "feature_pricing": "الدفع بالدينار عبر شرقلي"
+  },
+  "auth": {
+    "login": {
+      "title": "تسجيل الدخول",
+      "subtitle": "أدخل بياناتك للمتابعة إلى لوحة التحكم",
+      "submit": "تسجيل الدخول",
+      "submitting": "جارٍ تسجيل الدخول…",
+      "noAccount": "ليس لديك حساب؟",
+      "signupLink": "أنشئ حساباً"
+    },
+    "signup": {
+      "title": "إنشاء حساب",
+      "subtitle": "ابدأ بترجمة فيديوهاتك خلال دقائق",
+      "submit": "إنشاء الحساب",
+      "submitting": "جارٍ إنشاء الحساب…",
+      "hasAccount": "لديك حساب بالفعل؟",
+      "loginLink": "سجّل الدخول",
+      "success": "تم إنشاء حسابك بنجاح.",
+      "checkEmail": "راجع بريدك الإلكتروني لتأكيد الحساب."
+    },
+    "fields": {
+      "fullName": "الاسم الكامل",
+      "fullNamePlaceholder": "محمد بن علي",
+      "email": "البريد الإلكتروني",
+      "emailPlaceholder": "you@example.com",
+      "password": "كلمة المرور",
+      "passwordPlaceholder": "ثمانية أحرف على الأقل",
+      "confirmPassword": "تأكيد كلمة المرور"
+    },
+    "google": {
+      "continue": "المتابعة عبر Google",
+      "disabled": "تسجيل الدخول عبر Google غير مفعّل حالياً"
+    },
+    "divider": "أو",
+    "errors": {
+      "invalidCredentials": "البريد الإلكتروني أو كلمة المرور غير صحيحة.",
+      "emailTaken": "هذا البريد الإلكتروني مسجّل مسبقاً.",
+      "weakPassword": "كلمة المرور ضعيفة جداً.",
+      "generic": "تعذّر إتمام العملية. حاول مرة أخرى.",
+      "network": "تعذّر الاتصال بالخادم. تحقق من اتصالك بالإنترنت."
+    },
+    "validation": {
+      "fullNameMin": "الاسم يجب أن يحتوي على حرفين على الأقل",
+      "emailInvalid": "أدخل بريداً إلكترونياً صالحاً",
+      "passwordMin": "كلمة المرور يجب أن تكون 8 أحرف على الأقل",
+      "passwordWeak": "يجب أن تحتوي على حرف ورقم على الأقل",
+      "passwordMismatch": "كلمتا المرور غير متطابقتين"
+    }
+  },
+  "dashboard": {
+    "title": "لوحة التحكم",
+    "welcome": "مرحباً، {name}",
+    "signOut": "تسجيل الخروج",
+    "balance": "رصيد النقاط",
+    "credits": "نقطة",
+    "accountEmail": "البريد الإلكتروني",
+    "accountProvider": "طريقة الدخول",
+    "memberSince": "عضو منذ",
+    "walletMissing": "لم يتم العثور على محفظة لهذا الحساب.",
+    "apiUnreachable": "تعذّر الوصول إلى الخادم."
+  },
+  "common": {
+    "language": "اللغة",
+    "loading": "جارٍ التحميل…"
+  }
+}

@@ -430,6 +430,100 @@ docker compose --profile tools up -d
 
 ---
 
+## Authentication
+
+Supabase Auth (GoTrue) end to end, running locally as a real auth server rather
+than a stub — so a sign-up here exercises the same password hashing, JWT shape
+and `auth.users` INSERT as hosted Supabase, including the Phase 1 provisioning
+trigger.
+
+### Local auth stack
+
+`docker compose up -d` starts two extra services alongside Postgres and Redis:
+
+| Service   | Port | Role                                                       |
+| --------- | ---- | ---------------------------------------------------------- |
+| `auth`    | 9999 | GoTrue. Owns the `auth` schema and runs its own migrations |
+| `gateway` | 8000 | nginx, maps `/auth/v1` onto GoTrue and supplies CORS       |
+
+The gateway exists because `supabase-js` hardcodes `${SUPABASE_URL}/auth/v1`;
+a bare GoTrue is not reachable by the client library. It also adds the CORS
+headers Kong provides in production — without them every login and signup fails
+in the browser with an opaque "Failed to fetch".
+
+The dev JWT secret and the anon/service keys in `.env.example` are generated for
+local use and are safe to commit. Replace all three for any deployed
+environment.
+
+### Backend
+
+`apps/api` verifies Supabase access tokens locally with `SUPABASE_JWT_SECRET` —
+no round-trip to the auth server on the hot path. `requireAuth` attaches the
+user; `GET /api/v1/me` returns profile plus wallet.
+
+Reads go through `withUserContext()` from `@saas/db`, which runs the query as
+the `authenticated` Postgres role with the caller's id as `auth.uid()`. **Row
+Level Security is what enforces ownership, not the `where` clause** — the wallet
+lookup in `/me` has no `where: { userId }` at all and still returns only the
+caller's row. Both settings are transaction-local, so a pooled connection can
+never be handed on still impersonating someone.
+
+Use the plain `prisma` client for privileged backend writes; it connects as the
+owner and bypasses RLS by design.
+
+Note the verifier deliberately does **not** check `iss`: locally minted tokens
+carry no issuer claim, and requiring one would pass in production while failing
+every local token.
+
+### Frontend
+
+- Email/password sign-in and sign-up, shadcn-based forms with zod +
+  react-hook-form, validated on blur.
+- Google OAuth as an additional option (inert until `GOOGLE_OAUTH_*` is set).
+- `src/middleware.ts` runs next-intl first, then refreshes the Supabase session
+  onto that same response — reversed, the locale redirect would discard the
+  refreshed cookies and log users out hourly. It guards `/{locale}/dashboard`
+  and preserves `redirectTo`.
+- `useUser()` for rendering, `getServerUser()` for server components. Both use
+  `getUser()` rather than `getSession()`, which only decodes the cookie and
+  would believe a forged one.
+
+### Locales
+
+Arabic is the default and the UI is written Arabic-first; French is secondary.
+`localePrefix: 'always'`, so direction is decided before first paint rather than
+corrected after it. Arabic uses IBM Plex Sans Arabic with increased line height;
+numerals are forced LTR inside RTL text via `.numeric`.
+
+### Verified
+
+`apps/web/e2e-auth.mjs` drives a real headless browser against the running
+stack — 15/15 checks, including an actual sign-up through the form:
+
+- root redirects to `/ar`; Arabic renders `dir=rtl`, French `dir=ltr`
+- unauthenticated `/ar/dashboard` redirects to `/ar/login?redirectTo=/ar/dashboard`
+- zod blocks a malformed submit with inline messages
+- **a real UI sign-up advanced `auth.users`, `public.users` and
+  `credit_wallets` by exactly one each**, with `full_name` flowing from the form
+  through auth metadata into the trigger-provisioned row and a wallet at 0.00
+- the dashboard renders the balance fetched from the API under the user's own token
+- a signed-in user is bounced off `/login`; after sign-out the dashboard is
+  protected again; the account logs back in under `/fr`
+- a wrong password is rejected without revealing whether the account exists
+
+Run it with the stack up:
+
+```bash
+docker compose up -d && pnpm dev      # in one shell
+cd apps/web && node e2e-auth.mjs      # in another
+```
+
+API-level checks (also passing): missing, malformed, wrong-secret, expired, and
+anon-role tokens all return 401; two users each see exactly 1 of the 2 existing
+rows through RLS.
+
+---
+
 ## Building the worker image
 
 The worker is the only app that ships as a container at this stage: it needs

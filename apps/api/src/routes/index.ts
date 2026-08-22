@@ -9,6 +9,7 @@
 import { Router } from 'express';
 import { AppError } from '../http/errors.js';
 import { asyncHandler } from '../http/middleware.js';
+import { meRouter } from './me.js';
 
 export const v1Router: Router = Router();
 
@@ -108,6 +109,7 @@ webhooks.post(
   }),
 );
 
+v1Router.use('/me', meRouter);
 v1Router.use('/projects', projects);
 v1Router.use('/uploads', uploads);
 v1Router.use('/jobs', jobs);

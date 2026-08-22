@@ -2,70 +2,93 @@
 @tailwind components;
 @tailwind utilities;
 
-/* shadcn/ui design tokens — "new-york" style, slate base.
+/* ==========================================================================
+   Design tokens
+   --------------------------------------------------------------------------
+   This is the product's visual identity, not stock shadcn. Two deliberate
+   departures from the default palette:
+
+   1. The primary is a deep teal rather than near-black. The product dubs and
+      subtitles video; the UI sits next to colourful thumbnails all day, so the
+      accent must stay legible against arbitrary imagery without competing with
+      it. Teal also avoids the red/green pass-fail overload.
+
+   2. Surfaces are very slightly warm rather than pure neutral grey. Against
+      the cool primary this reads as intentional rather than unstyled, and it
+      keeps large light surfaces from looking clinical.
+
    Every colour is an HSL triplet without the hsl() wrapper so Tailwind can
-   compose it with opacity modifiers (e.g. bg-primary/50). */
+   compose opacity modifiers (bg-primary/40).
+   ========================================================================== */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 40 30% 99%;
+    --foreground: 200 20% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 200 20% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 200 20% 12%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    /* Deep teal — brand anchor */
+    --primary: 187 78% 24%;
+    --primary-foreground: 180 40% 98%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 190 20% 95%;
+    --secondary-foreground: 195 30% 20%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 40 12% 95%;
+    --muted-foreground: 200 10% 42%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    /* Warm amber, used sparingly for credits and highlights */
+    --accent: 32 90% 52%;
+    --accent-foreground: 30 60% 12%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --success: 155 62% 34%;
+    --success-foreground: 150 40% 98%;
 
-    --radius: 0.5rem;
+    --border: 195 16% 88%;
+    --input: 195 16% 86%;
+    --ring: 187 78% 30%;
+
+    --radius: 0.625rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    --background: 200 28% 8%;
+    --foreground: 180 15% 94%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 200 26% 11%;
+    --card-foreground: 180 15% 94%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 200 26% 11%;
+    --popover-foreground: 180 15% 94%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 183 62% 52%;
+    --primary-foreground: 200 40% 8%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 200 20% 18%;
+    --secondary-foreground: 180 15% 94%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 200 18% 17%;
+    --muted-foreground: 195 12% 64%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 32 84% 58%;
+    --accent-foreground: 30 60% 10%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 62% 52%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --success: 155 52% 46%;
+    --success-foreground: 150 40% 98%;
+
+    --border: 200 18% 22%;
+    --input: 200 18% 24%;
+    --ring: 183 62% 46%;
   }
 }
 
@@ -79,5 +102,30 @@
     font-feature-settings:
       'rlig' 1,
       'calt' 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Arabic needs more line height than Latin at the same size: the script has
+     taller ascenders, deeper descenders, and diacritics that collide otherwise. */
+  [dir='rtl'] body {
+    line-height: 1.85;
+  }
+
+  /* Numerals stay LTR inside RTL text — balances, durations and dates render
+     in the wrong order without this. */
+  [dir='rtl'] .numeric {
+    direction: ltr;
+    unicode-bidi: embed;
+  }
+}
+
+@layer components {
+  /* Subtle grid behind the auth brand panel. Kept in CSS rather than an asset
+     so it recolours with the theme and costs no extra request. */
+  .brand-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--primary-foreground) / 0.07) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--primary-foreground) / 0.07) 1px, transparent 1px);
+    background-size: 44px 44px;
   }
 }

@@ -66,6 +66,94 @@ services:
       start_period: 5s
 
   # ---------------------------------------------------------------------------
+  # Supabase Auth (GoTrue) — the real auth server, not a stub
+  # ---------------------------------------------------------------------------
+  # GoTrue owns the `auth` schema and runs its own migrations at startup, so
+  # sign-ups here exercise the identical code path as hosted Supabase: the same
+  # password hashing, the same JWT shape, and — importantly — the same INSERT
+  # into auth.users that fires our signup-provisioning trigger.
+  #
+  # The alternative (faking rows in an auth.users stub) would verify nothing
+  # about the actual login flow.
+  auth:
+    image: supabase/gotrue:v2.196.0
+    container_name: saas-auth
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      PORT: 9999
+      # Publicly reachable base URL of the auth service — i.e. through the
+      # gateway, not the container port. GoTrue builds OAuth redirect and email
+      # links from this, so pointing it at :9999 would emit links the browser
+      # cannot follow. Read WITHOUT the GOTRUE_ prefix.
+      API_EXTERNAL_URL: ${SUPABASE_GATEWAY_URL:-http://localhost:8000}/auth/v1
+
+      GOTRUE_DB_DRIVER: postgres
+      # Connects as the superuser locally. On hosted Supabase this is the
+      # least-privileged supabase_auth_admin role; the role exists in the shim
+      # so tightening this later needs no schema change.
+      GOTRUE_DB_DATABASE_URL: postgres://postgres:postgres@postgres:5432/saas_dev?search_path=auth&sslmode=disable
+
+      # Must match SUPABASE_JWT_SECRET in .env — the API verifies the tokens
+      # GoTrue mints, so a mismatch shows up as every request being 401.
+      GOTRUE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+
+      GOTRUE_SITE_URL: ${WEB_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ${WEB_URL:-http://localhost:3000}/**
+      GOTRUE_DISABLE_SIGNUP: "false"
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      # No SMTP server locally, so accounts are confirmed on creation. Hosted
+      # Supabase should leave this false and send a real confirmation mail.
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_SMTP_ADMIN_EMAIL: dev@localhost
+
+      # Google OAuth. Inert until real credentials are set in .env; the button
+      # in the UI surfaces GoTrue's error rather than silently doing nothing.
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${SUPABASE_GATEWAY_URL:-http://localhost:8000}/auth/v1/callback
+
+      GOTRUE_LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Gateway — gives GoTrue the /auth/v1 prefix supabase-js expects
+  # ---------------------------------------------------------------------------
+  # Hosted Supabase puts Kong in front of every service. supabase-js hardcodes
+  # `${SUPABASE_URL}/auth/v1`, so without this the client library cannot talk
+  # to a bare GoTrue and the web app would need local-only special-casing.
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: saas-gateway
+    restart: unless-stopped
+    depends_on:
+      auth:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./docker/gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
   # Optional tooling — `docker compose --profile tools up -d`
   # ---------------------------------------------------------------------------
 

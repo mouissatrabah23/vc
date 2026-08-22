@@ -1,0 +1,20 @@
+-- A stand-in for GoTrue's `auth.users`, for the SHADOW database only.
+--
+-- `prisma migrate dev` replays the migration history into saas_shadow, and the
+-- RLS migration attaches triggers to auth.users. GoTrue never touches the
+-- shadow database, so without this stub every `migrate dev` would fail with
+-- `relation "auth.users" does not exist`.
+--
+-- Only the columns the triggers reference. This is deliberately NOT applied to
+-- saas_dev: there, GoTrue creates and owns the real table, and a pre-existing
+-- one would collide with its migrations.
+
+CREATE TABLE IF NOT EXISTS auth.users (
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email              varchar(320) UNIQUE,
+  raw_user_meta_data jsonb DEFAULT '{}'::jsonb,
+  created_at         timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT SELECT ON auth.users TO authenticated, service_role;
+GRANT ALL ON auth.users TO service_role;

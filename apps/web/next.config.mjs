@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
+import createNextIntlPlugin from 'next-intl/plugin';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -42,4 +43,8 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+// Wires the request-scoped i18n config (locale resolution + message loading)
+// into the App Router build.
+const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
+
+export default withNextIntl(nextConfig);

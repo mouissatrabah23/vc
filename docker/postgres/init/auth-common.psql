@@ -1,0 +1,42 @@
+-- Supabase platform helpers that GoTrue itself does NOT create.
+--
+-- Included with \i by 00-shim.sql into BOTH saas_dev and saas_shadow.
+--
+-- GoTrue owns the `auth.users` table and its own migrations. What it does not
+-- ship is `auth.uid()` / `auth.role()` — on hosted Supabase those come from the
+-- platform layer, and every RLS policy in this project depends on them. So the
+-- schema is created here (empty, GoTrue fills it) along with the helpers.
+
+CREATE SCHEMA IF NOT EXISTS auth;
+
+-- Supabase derives the current user from the request JWT, which PostgREST
+-- exposes as the `request.jwt.claims` GUC. The API sets it per transaction:
+--   SET LOCAL ROLE authenticated;
+--   SET LOCAL request.jwt.claims = '{"sub":"<uuid>","role":"authenticated"}';
+CREATE OR REPLACE FUNCTION auth.uid()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT NULLIF(
+    COALESCE(
+      current_setting('request.jwt.claim.sub', true),
+      (NULLIF(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
+    ),
+    ''
+  )::uuid
+$$;
+
+CREATE OR REPLACE FUNCTION auth.role()
+RETURNS text
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COALESCE(
+    current_setting('request.jwt.claim.role', true),
+    (NULLIF(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'),
+    'anon'
+  )
+$$;
+
+GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;

@@ -1,0 +1,74 @@
+{
+  "brand": {
+    "name": "Sawtak",
+    "tagline": "Traduction et doublage vidéo par IA",
+    "pitch": "Transformez vos vidéos en arabe, français et anglais avec des sous-titres précis et un doublage naturel.",
+    "feature_subtitles": "Sous-titres précis",
+    "feature_dubbing": "Doublage aux voix naturelles",
+    "feature_pricing": "Paiement en dinar via Chargily"
+  },
+  "auth": {
+    "login": {
+      "title": "Connexion",
+      "subtitle": "Saisissez vos identifiants pour accéder au tableau de bord",
+      "submit": "Se connecter",
+      "submitting": "Connexion en cours…",
+      "noAccount": "Pas encore de compte ?",
+      "signupLink": "Créer un compte"
+    },
+    "signup": {
+      "title": "Créer un compte",
+      "subtitle": "Commencez à traduire vos vidéos en quelques minutes",
+      "submit": "Créer le compte",
+      "submitting": "Création en cours…",
+      "hasAccount": "Vous avez déjà un compte ?",
+      "loginLink": "Se connecter",
+      "success": "Votre compte a été créé.",
+      "checkEmail": "Vérifiez votre boîte mail pour confirmer votre compte."
+    },
+    "fields": {
+      "fullName": "Nom complet",
+      "fullNamePlaceholder": "Mohamed Ben Ali",
+      "email": "Adresse e-mail",
+      "emailPlaceholder": "vous@exemple.com",
+      "password": "Mot de passe",
+      "passwordPlaceholder": "Au moins huit caractères",
+      "confirmPassword": "Confirmer le mot de passe"
+    },
+    "google": {
+      "continue": "Continuer avec Google",
+      "disabled": "La connexion Google n'est pas activée"
+    },
+    "divider": "ou",
+    "errors": {
+      "invalidCredentials": "Adresse e-mail ou mot de passe incorrect.",
+      "emailTaken": "Cette adresse e-mail est déjà utilisée.",
+      "weakPassword": "Le mot de passe est trop faible.",
+      "generic": "L'opération a échoué. Veuillez réessayer.",
+      "network": "Impossible de joindre le serveur. Vérifiez votre connexion."
+    },
+    "validation": {
+      "fullNameMin": "Le nom doit contenir au moins 2 caractères",
+      "emailInvalid": "Saisissez une adresse e-mail valide",
+      "passwordMin": "Le mot de passe doit contenir au moins 8 caractères",
+      "passwordWeak": "Doit contenir au moins une lettre et un chiffre",
+      "passwordMismatch": "Les mots de passe ne correspondent pas"
+    }
+  },
+  "dashboard": {
+    "title": "Tableau de bord",
+    "welcome": "Bonjour, {name}",
+    "signOut": "Se déconnecter",
+    "balance": "Solde de crédits",
+    "credits": "crédits",
+    "accountEmail": "Adresse e-mail",
+    "accountProvider": "Méthode de connexion",
+    "memberSince": "Membre depuis",
+    "walletMissing": "Aucun portefeuille trouvé pour ce compte.",
+    "apiUnreachable": "Le serveur est injoignable."
+  },
+  "common": {
+    "language": "Langue",
+    "loading": "Chargement…"
+  }
+}

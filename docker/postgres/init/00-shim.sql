@@ -1,18 +1,17 @@
--- Minimal Supabase compatibility shim for the LOCAL dev cluster only.
+-- Supabase compatibility shim for the LOCAL dev cluster only.
 --
--- Supabase provides an `auth` schema, an `auth.uid()` helper and the roles
--- anon / authenticated / service_role. Plain Postgres does not, so without this
--- the RLS migration cannot be applied locally and you would only discover
--- broken policies after pointing at a real Supabase project.
+-- Hosted Supabase gives you an `auth` schema, `auth.uid()`, and the roles
+-- anon / authenticated / service_role. Locally we assemble the same surface
+-- from parts: GoTrue (the `auth` service in docker-compose) owns auth.users,
+-- and this file supplies the roles and the platform helper functions.
 --
 -- Runs once, when the postgres-data volume is first created. Re-run with:
 --   docker compose down -v && docker compose up -d
 --
--- NEVER apply this to a real Supabase database — it already has all of it, and
--- CREATE OR REPLACE on auth.uid() would overwrite theirs.
+-- NEVER apply this to a real Supabase database.
 
 -- ---------------------------------------------------------------------------
--- Roles — cluster-wide, so created once and shared by every database here
+-- Roles — cluster-wide, shared by every database here
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
@@ -27,30 +26,31 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
     CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS;
   END IF;
+  -- GoTrue connects as this role on hosted Supabase. Created so the local
+  -- setup can move to a least-privilege connection later without a migration.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    CREATE ROLE supabase_auth_admin NOLOGIN NOINHERIT CREATEROLE;
+  END IF;
 END
 $$;
 
-GRANT anon, authenticated, service_role TO postgres;
+GRANT anon, authenticated, service_role, supabase_auth_admin TO postgres;
 
 -- ---------------------------------------------------------------------------
--- auth objects in the main development database
+-- saas_dev — helpers only. GoTrue creates auth.users here at startup.
 -- ---------------------------------------------------------------------------
-\echo '>> applying auth shim to saas_dev'
-\i /docker-entrypoint-initdb.d/auth-objects.psql
+\echo '>> saas_dev: auth schema + helper functions (GoTrue owns auth.users)'
+\i /docker-entrypoint-initdb.d/auth-common.psql
 
 -- ---------------------------------------------------------------------------
--- Shadow database for `prisma migrate dev`
+-- saas_shadow — for `prisma migrate dev`
 -- ---------------------------------------------------------------------------
--- Prisma replays the full migration history into a throwaway "shadow" database
--- to detect drift. Our RLS migration references auth.users, which would not
--- exist in a database Prisma created from nothing — migrate dev would fail with
--- `schema "auth" does not exist`.
---
--- Pre-creating the shadow database WITH the shim, and pointing
--- shadowDatabaseUrl at it, is the fix Supabase documents for exactly this.
--- Prisma will drop and recreate the *contents*, never the database itself.
+-- Prisma replays the full migration history into a throwaway database to
+-- detect drift. That database needs auth.users to exist, and GoTrue never
+-- touches it, so it gets the stub as well as the helpers.
 CREATE DATABASE saas_shadow OWNER postgres;
 
 \connect saas_shadow
-\echo '>> applying auth shim to saas_shadow'
-\i /docker-entrypoint-initdb.d/auth-objects.psql
+\echo '>> saas_shadow: auth schema + helpers + auth.users stub'
+\i /docker-entrypoint-initdb.d/auth-common.psql
+\i /docker-entrypoint-initdb.d/auth-users-stub.psql

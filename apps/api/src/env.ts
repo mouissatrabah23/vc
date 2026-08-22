@@ -33,9 +33,10 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
   QUEUE_PREFIX: z.string().default('saas:dev'),
 
-  // Optional at this stage — the integrations are not wired up yet. Promote to
-  // required as each feature lands.
-  SUPABASE_JWT_SECRET: z.string().optional(),
+  // Required: every authenticated request is verified against this. A missing
+  // or wrong value fails closed (all 401s), so it is better to refuse to boot.
+  // 32 bytes is the practical floor for an HS256 secret.
+  SUPABASE_JWT_SECRET: z.string().min(32, 'SUPABASE_JWT_SECRET must be at least 32 characters'),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   CHARGILY_API_KEY: z.string().optional(),
   CHARGILY_SECRET_KEY: z.string().optional(),
